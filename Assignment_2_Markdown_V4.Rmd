@@ -1,0 +1,579 @@
+---
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+---
+
+<div id="bg" style="height:150px;width:150px; float=left; clear=true; margin-left:43%">
+  <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/c/ce/IE_University_logo.svg/1200px-IE_University_logo.svg.png" style="width:100%; height:100%;">
+</div> 
+
+
+# <span style="color:red; margin-left:35%">Machine Learning</span>
+# <span style="color:black; margin-left:28%; font-size:16pt;">Professor: ANGEL CASTELLANOS GONZALEZ</span>
+# <span style="color:black; margin-left:40%; font-size:22pt;"><u>Assignment #2</u></span>
+
+# </br>
+### <span style="color:blue; text-decoration:underline">**Done By:**</span>
+### **1.  Jorge Alarcon**
+### **2.  Cecilia De Brun**
+### **3.  Hani Eid**
+  
+### The best score we got was: **0.8187**
+
+Initialization
+
+Import libraries
+
+```{r, warning = FALSE, message = FALSE}
+library(caTools)
+library(ggplot2)
+library(googleVis)
+library(randomForest)
+library(caret)
+library(xgboost)
+library(data.table)
+library(car)
+library(dummies)
+library(LogicReg)
+library(RWeka)
+library(lubridate)
+library(plyr)
+library(e1071)
+library(arm)
+library(abind)
+library(coda)
+#library(h2o)
+#localH2O <- h2o.init(nthreads = -1)
+#h2o.init()
+```
+
+```{r}
+training_data<- read.csv("Data/Training_data.csv")
+test_data<- read.csv("Data/Test_data.csv")
+labels_data<- read.csv("Data/Labels.csv")
+```
+
+We will merge training and labels data frames to create the data frame train
+```{r}
+train<- merge(labels_data, training_data)
+str(train)
+
+```
+
+We look at the distribution of our dependent variable through the sample
+```{r}
+table(train$status_group)
+```
+
+As proportions
+```{r}
+proportions_status<-round(prop.table(table(train$status_group))*100, 1)
+print(proportions_status)
+```
+
+Let's visualize a matrix between the quantity of water and the status
+```{r}
+prop.table(table(train$quantity, train$status_group), margin = 1)
+```
+
+Create bar plot for variable quantity.
+From this graph we can see how the quantity of water is related with the waterpoints functionality since when they are dry, the proportion of non fcuntional water point is almost 100%, while when the water is = 'enough', Functionality increases.
+```{r}
+
+plot_quantity<-qplot(quantity, data=train, geom="bar", fill=status_group) + 
+  theme(legend.position = "top")
+print(plot_quantity)
+```
+
+Create bar plot for variable quality_group:
+This variable doesn't seem to throw much information, since there are a lot of values = 'good', so it doesn't seem so helpful to discriminate
+```{r}
+
+plot_quality <- qplot(quality_group, data=train, geom="bar", fill=status_group) + 
+  theme(legend.position = "top") 
+
+```
+
+
+Now we are going to subset a histogram for `construction_year` grouped 
+by `status_group` when construction_year is larger than 0
+```{r}
+
+plot_const.year<-ggplot(subset(train, construction_year > 0), aes(x = construction_year)) +
+  geom_histogram(bins = 20) + 
+  facet_grid( ~ status_group)
+print(plot_const.year)
+```
+
+We decided to create a matrix correlation in order to study the presence of strong correlations between variables. We do this to ensure that the variables we include in the logistic models don´t have repeated information.
+
+```{r}
+indexes <- sapply(train , is.numeric)
+train_numeric <- train[,indexes]
+correlations_year <- cor(y=train_numeric$construction_year, x=train_numeric, use = 'pairwise.complete.obs')
+sum(is.na(train$construction_year))
+corrplot::corrplot(cor(train_numeric[,-25]))
+```
+
+
+Feature Enginer
+
+The installer variable has a lot of levels, many of which are the result of mispelling when inputing the data. For this reason, we will choose the more relevant variables and group them by some specific characters. Specifically, we transform ´installer´ variable into lowercase and took the first 3 letters as a sub string
+```{r}
+summary(train$installer)
+train$install_3 <- substr(tolower(train$installer),1,3)
+train$install_3[train$install_3 %in% c(" ", "", "0", "_", "-")] <- "other"
+```
+
+
+Take the top 15 substrings from above by occurance frequency
+```{r}
+install_top_15 <- names(summary(as.factor(train$install_3)))[1:15]
+train$install_3[!(train$install_3 %in% install_top_15)] <- "other"
+train$install_3 <- as.factor(train$install_3)
+```
+
+Table of the install_3 variable vs the status of the pumps
+```{r}
+table(train$install_3, train$status_group)
+# As row-wise proportions, install_3 vs status_group
+prop.table(table(train$install_3, train$status_group), margin = 1)
+
+```
+
+Create install_3 for the test set using same top 15 from above
+```{r}
+test_data$install_3 <- substr(tolower(test_data$installer),1,3)
+test_data$install_3[test_data$install_3 %in% c(" ", "", "0", "_", "-")] <- "other"
+test_data$install_3[!(test_data$install_3 %in% install_top_15)] <- "other"
+test_data$install_3 <- as.factor(test_data$install_3)
+```
+
+The variable ´funders´ presents the same problems as installer, so we will follow the same procedure. 
+Create the same for funders through the creation of the variable funder_3 for the train set using 
+same top 15 from above
+```{r}
+summary(train$funder)
+train$funder_3 <- substr(tolower(train$funder),1,3)
+train$funder_3[train$funder_3 %in% c(" ", "", "0", "_", "-")] <- "other"
+
+#Take the top 15 substrings from above by occurance frequency
+funder_top_15 <- names(summary(as.factor(train$funder_3)))[1:15]
+train$funder_3[!(train$funder_3 %in% funder_top_15)] <- "other"
+train$funder_3 <- as.factor(train$funder_3)
+
+#Table of the funder_3 variable vs the status of the pumps
+table(train$funder_3, train$status_group)
+# As row-wise proportions, funder_3 vs status_group
+prop.table(table(train$funder_3, train$status_group), margin = 1)
+
+test_data$funder_3 <- substr(tolower(test_data$funder),1,3)
+test_data$funder_3[test_data$funder_3 %in% c(" ", "", "0", "_", "-")] <- "other"
+test_data$funder_3[!(test_data$funder_3 %in% funder_top_15)] <- "other"
+test_data$funder_3 <- as.factor(test_data$funder_3)
+```
+
+
+
+We have splited the variable date_recorded into the variable month in the train and test dataset
+```{r}
+
+train$month <- lubridate::month(train$date_recorded)
+test_data$month <- lubridate::month(test_data$date_recorded)
+```
+
+
+We convert the variables basin, payment_type and status_group as a factors
+```{r}
+train$payment_type <- as.factor(train$payment_type)
+train$basin <- as.factor(train$basin)
+train$status_group <- as.factor(train$status_group)
+```
+
+In order to make a proper NA imputation for construction_year we decided to use a linear model
+We removed from the model extraction_type_group and latitude because of multicollinearity. We decided to not use it because the results obtained with the imputation reduce performance of the model
+```{r}
+# train_full_const <- subset(train, subset = construction_year != 0)
+# train_with0_const <- subset(train, subset = construction_year == 0)
+#or,
+#train[train$construction_year!=0,]
+
+
+# model_linear_const <- lm(construction_year ~ longitude + 
+#                            quantity + waterpoint_type + install_3 + 
+#                            payment_type + permit, data = train_full_const)
+# multicollinearity<-vif(model_linear_const)
+# multicollinearity
+# 
+# train_with0_const$construction_year <- round(predict(model_linear_const, train_with0_const),0)
+# train <- rbind(train_full_const, train_with0_const)
+```
+
+
+###Predictions through random forest!!
+
+First Random Forest only including the variables proposed by datacamp course
+```{r}
+#
+# model_forest <- randomForest(as.factor(status_group) ~ longitude + latitude + 
+#                                extraction_type_group + quantity + waterpoint_type + 
+#                                construction_year + install_3,
+#                              data = train, importance = TRUE,
+#                              ntree = 15, nodesize = 3)
+```
+
+Predict first model using in the training set
+```{r}
+# pred_forest_train <- predict(model_forest, train)
+# importance(model_forest)
+# confusionMatrix(pred_forest_train, train$status_group)
+# 
+# #variables importance
+# importance(model_forest)
+# varImpPlot(model_forest)
+# 
+# # Predict using the test values
+# pred_forest_test <- predict(model_forest, test_data)
+```
+
+Second Random Forest, we decided to include some variables such as population and water_quality that we consider important for the prediction of the dependent variable
+```{r}
+ # model_forest_2 <- randomForest(as.factor(status_group) ~ longitude + latitude + 
+ #                                 extraction_type_group + quantity + waterpoint_type + 
+ #                                 construction_year + install_3 + population + water_quality,
+ #                              data = train, importance = TRUE,
+ #                              ntree = 15, nodesize = 3,
+ #                              seed = 42, do.trace=20)
+
+```
+
+Predict second random forest using the training values
+```{r}
+# pred_forest_train <- predict(model_forest_2, train)
+# importance(model_forest_2)
+# confusionMatrix(pred_forest_train, train$status_group)
+# 
+# # Predict using the test values
+# pred_forest_test <- predict(model_forest_2, test_data)
+```
+
+We decided to exclude some variables due to a large amount of NAs and the difficulty make an NA imputations through a prediction of the real values
+```{r}
+train$recorded_by <- NULL
+train$ward <- NULL
+train$subvillage <- NULL
+train$scheme_name <- NULL
+train$wpt_name <- NULL
+train$date_recorded <- NULL
+train$funder <- NULL
+train$installer <- NULL
+feature.names <- names(train)
+```
+
+We develop a third random forest that includes new variables such as funder_3 or month increasing the performance of the model to 0.8
+```{r}
+# model_forest_3 <- randomForest(as.factor(status_group) ~ longitude + latitude + 
+#                                  extraction_type_group + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month, do.trace=50,
+#                                data = train, importance = TRUE,
+#                                ntree = 50, nodesize = 2,
+#                               seed = 42)
+```
+
+We decided to create a random forest at the top of a bayesian of logistic regression. 
+To do it, firstly we have dummified the dependent variable to compute the logit models and split the sample for the models.
+```{r}
+# train$functional <- as.factor(ifelse(train$status_group=='functional',1,0))
+# train$functional_nr <- as.factor(ifelse(train$status_group=='functional needs repair',1,0))
+# train$non_functional <- as.factor(ifelse(train$status_group=='non functional',1,0))
+```
+
+Secondly, we have created three Bayesian regression model, one per each category
+```{r}
+# start_time <- Sys.time()
+# func <- train(functional ~ longitude + 
+#                                  extraction_type_group + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month, method = "bayesglm",data=train)
+# 
+# 
+# 
+# func_nr <- train(functional_nr ~ longitude + latitude + 
+#                                  extraction_type_group + quantity + waterpoint_type + 
+#                                  install_3 + water_quality + 
+#                                  funder_3 + month, method = "bayesglm",data=train)
+# 
+# 
+# non_func <- train(non_functional ~ longitude + latitude + 
+#                                  extraction_type_group + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month, method = "bayesglm",data=train)
+# 
+# end_time <- Sys.time()
+# end_time - start_time
+```
+
+
+
+We predict bayesian in train data
+```{r}
+# pred_logit_func <- predict(func, train)
+# 
+# pred_logit_func_nr <- predict(func_nr, train)
+# 
+# pred_logit_non_func <- predict(non_func, train)
+# 
+# table(train$status_group,pred_logit_func)
+# 
+# table(train$status_group,pred_logit_func_nr)
+# 
+# table(train$status_group,pred_logit_non_func)
+```
+
+We combine the results of the predicction as three new variables to be used by the random forest
+```{r}
+# train <- cbind(train, pred_logit_func, pred_logit_func_nr, pred_logit_non_func)
+```
+
+We develop a function to create a training and validation sets to run cross validation later
+```{r validation and test}
+
+# 
+# splitdf <- function(dataframe, seed=NULL) {
+#   if (!is.null(seed)) set.seed(seed)
+#     index <- 1:nrow(dataframe)
+#     trainindex <- sample(index, trunc(length(index)/1.5))
+#     trainset <- dataframe[trainindex, ]
+#     testset <- dataframe[-trainindex, ]
+#     list(trainset=trainset,testset=testset)
+# }
+# splits <- splitdf(train, seed=1)
+# training <- splits$trainset
+# validation <- splits$testset
+```
+
+
+Now we have created a fourth random forest at top of the bayesian predictions that not improve the results of the previous model
+```{r}
+# model_forest_4 <- randomForest(as.factor(status_group) ~ longitude + latitude + 
+#                                  extraction_type_group + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month + pred_logit_func + pred_logit_func_nr + pred_logit_non_func, 
+#                                do.trace=100,
+#                                data = train, importance = TRUE,
+#                                ntree = 500, nodesize = 2,
+#                               seed = 42)
+```
+
+Now we have created a fourth random forest with the inclusion of the variables basin, amount_tsh, construction_year, gps_height, pump_age, payment, source, region_code, district_code and not including the bayesian predictions. With this model we achieve a score of 0.8113
+```{r}
+# start_time <- Sys.time()
+# model_forest_5 <- randomForest(status_group ~ longitude + latitude + 
+#                                  extraction_type_class + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month + basin + amount_tsh + construction_year +
+#                                  gps_height + payment + source + region_code + district_code,
+#                                do.trace=100,
+#                                data = training, importance = TRUE,
+#                                ntree = 500, nodesize = 3,
+#                               seed = 42)
+# end_time <- Sys.time()
+# end_time - start_time
+
+```
+
+We tried anothe random forest with the package h2o but didn't improve previuos results
+```{r}
+# train.h2o <- as.h2o(training)
+# test.h2o <- as.h2o(test_data)
+# validation.h20 <- as.h2o(validation)
+# 
+# rforest.model <- h2o.randomForest(x=c('longitude', 'latitude', 'extraction_type_group', 
+#                                       'quantity', 'waterpoint_type',
+#                                  'install_3', 'population', 'water_quality', 
+#                                  'funder_3', 'month'),y='status_group',  training_frame = train.h2o, 
+#                                   ntrees = 1500, mtries = 3, nfolds = 3,validation_frame = validation.h20,
+#                                    max_depth = 10, seed = 42)
+# 
+# rforest.model
+```
+
+
+Another example Random Forest 5 (bayesian with random forest at top) 0.8041
+```{r}
+# model_forest_5 <- randomForest(as.factor(status_group) ~ longitude + latitude + 
+#                                  extraction_type_group + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month + pred_logit_func + pred_logit_func_nr + pred_logit_non_func, 
+#                                do.trace=100,
+#                                data = training, importance = TRUE,
+#                                ntree = 500, nodesize = 2,
+#                               seed = 42)
+
+```
+
+Also we have tried a random forest using caret package. It takes 23 minutes and didn't improve previous results.
+```{r}
+ # train_2<-train[1:10000,]
+ # 
+ # control <- trainControl(method = "repeatedcv", number = 2, repeats = 1, search = "random",
+ #                        classProbs = TRUE)
+ # 
+ # start_time <- Sys.time()
+ # 
+ # levels(train$status_group)[2] = 'functional_needs_repair'
+ # levels(train$status_group)[3] = 'non_functional'
+ # 
+ # final_random <- train(status_group ~ longitude + latitude +
+ #                                 extraction_type_class + quantity + waterpoint_type +
+ #                                 install_3 + population + water_quality +
+ #                                 funder_3 + month + basin + amount_tsh + construction_year +
+ #                                 gps_height + payment + source + region_code + district_code, data = train, method = "rf", ntree=500, nodesize = 2,
+ #                       trControl = control, metric ="Accuracy", do.trace=500)
+ # 
+ #  levels(train$extraction_type_group)
+ # levels(train$status_group)
+ # 
+ # end_time <- Sys.time()
+ # end_time - start_time
+```
+
+Predictions in train with the package h02
+```{r}
+#prediction_rf_h20 <- h2o.predict(rforest.model, train.h2o)
+```
+
+
+Predict using the training values
+```{r}
+# pred_forest_train_5 <- predict(model_forest_5, train)
+# importance(model_forest_5)
+# confusionMatrix(pred_forest_train_5, train$status_group)
+```
+
+Predict using the va validation values
+```{r}
+# pred_forest_train_5 <- predict(model_forest_5, validation)
+# importance(model_forest_5)
+# confusionMatrix(pred_forest_train_5, validation$status_group)
+```
+
+We include the complete train set in the development of the random forest 5:
+```{r}
+# model_forest_5 <- randomForest(as.factor(status_group) ~ longitude + latitude + 
+#                                  extraction_type_group + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month + pred_logit_func + pred_logit_func_nr + pred_logit_non_func, 
+#                                do.trace=100,
+#                                data = train, importance = TRUE,
+#                                ntree = 500, nodesize = 2,
+#                               seed = 42)
+
+```
+
+
+We prepare the dataset to create a random forest at the top of the bayesian
+```{r}
+# pred_logit_func <- predict(func, train)
+# 
+# pred_logit_func_nr <- predict(func_nr, train)
+# 
+# pred_logit_non_func <- predict(non_func, train)
+# 
+# table(train$status_group,pred_logit_func)
+# 
+# table(train$status_group,pred_logit_func_nr)
+# 
+# table(train$status_group,pred_logit_non_func)
+```
+
+The random forest 5.1 including the bayesian models
+```{r}
+# start_time <- Sys.time()
+# model_forest_5.2 <- randomForest(status_group ~ longitude + latitude + 
+#                                  extraction_type_class + quantity + waterpoint_type + 
+#                                  install_3 + population + water_quality + 
+#                                  funder_3 + month + basin + amount_tsh + construction_year +
+#                                  gps_height + payment + source + region_code + district_code + pred_logit_func +
+#                                    pred_logit_func_nr + pred_logit_non_func,
+#                                do.trace=100,
+#                                data = train, importance = TRUE,
+#                                ntree = 500, nodesize = 3,
+#                               seed = 42)
+# end_time <- Sys.time()
+# end_time - start_time
+```
+
+
+Predict on the train and plot the confusion matrix and variable importance
+```{r}
+# pred_forest_train_5.1 <- predict(model_forest_5.1, train)
+# importance(model_forest_5.1)
+# 
+# confusionMatrix(pred_forest_train_5.1, train$status_group)
+```
+
+
+
+Predict bayesian using the test values
+```{r}
+ # pred_bayes_test_1 <- predict(func, test_data)
+ # pred_bayes_test_2 <- predict(func_nr, test_data)
+ # pred_bayes_test_3 <- predict(non_func, test_data)
+ # test_data <- cbind(test_data, pred_logit_func=pred_bayes_test_1, pred_logit_func_nr=pred_bayes_test_2,
+ #                    pred_logit_non_func=pred_bayes_test_3)
+```
+
+Results 0.8164
+```{r}
+#pred_forest_test_5.1 <- predict(model_forest_5.1, test_data)
+```
+
+We have include the relevant variables we previously found in a new model increasing the nodesize to 3. It takes 6 minutes to process and the result is 0.8187
+```{r}
+start_time <- Sys.time()
+model_forest_5.1 <- randomForest(status_group ~ longitude + latitude +
+                                 extraction_type_class + quantity + waterpoint_type +
+                                 install_3 + population + water_quality +
+                                 funder_3 + month + basin + amount_tsh + construction_year +
+                                 gps_height + payment + source + region_code + district_code,
+                               do.trace=100,
+                               data = train, importance = TRUE,
+                               ntree = 500, nodesize = 3,
+                              seed = 42)
+end_time <- Sys.time()
+end_time - start_time
+
+```
+
+We compute the predictions in the train set to plot the confusion matrix and the importance of the variables
+```{r}
+pred_forest_train_5 <- predict(model_forest_5.1, train)
+importance(model_forest_5.1)
+confusionMatrix(pred_forest_train_5, train$status_group)
+```
+
+
+Predict with the random forest 5.1 in the test dataset (Best obtained result 0.8187)
+```{r}
+pred_forest_test_5 <- predict(model_forest_5.1, test_data)
+
+# levels(pred_forest_test_5)
+# levels(pred_forest_test_5)[2] = 'functional needs repair'
+# levels(pred_forest_test_5)[3] = 'non functional'
+
+```
+
+We create the submission file
+```{r}
+# submission <- data.frame(test_data$id)
+# submission$status_group <- pred_forest_test_5
+# names(submission)[1] <- "id"
+# write.csv(submission, 
+#           file = "submission_v10.csv", 
+#           row.names=FALSE)
+```
